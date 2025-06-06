@@ -2,313 +2,112 @@
 
 
 #!/usr/bin/perl
-use File::Copy;
+use strict;
+use warnings;
 
-$TABLE_NAME = "nasdaq_prices";
-$DATABASE_ENGINE = "InnoDB";
-$DEFAULT_CHARSET = "latin1";
+# Settings
+my $TABLE_NAME = "nasdaq_prices";
+my $DATABASE_ENGINE = "InnoDB";
+my $DEFAULT_CHARSET = "latin1";
+my $filename = "prices.csv";
 
+# File Handles
+open(my $table_fh, ">", "mysqlCreateSchema.sql") or die "Failed to open schema output file";
+open(my $values_fh, ">", "mysqlInsertValues.sql") or die "Failed to open insert output file";
+open(my $file_fh, "<", $filename) or die "Failed to open input CSV: $!";
 
-$filename = "prices.csv";
+# Read column names
+my $header = <$file_fh>;
+chomp($header);
+$header =~ s/["']//g;
+$header =~ s/\r|\n//g;
+$header =~ s/ /_/g;
 
+my @Field_Names = split(",", $header);
+my $Field_Names_Count = scalar @Field_Names;
 
-open(TABLE, ">mysqlCreateSchema.sql") || die "Failed to redirect output";
-open(VALUES, ">mysqlInsertValues.sql") || die "Failed to redirect output";
+# Prepare for type inference
+my @type;
+my @length;
+my @decimal_length1;
+my @decimal_length2;
 
+my $row_count = 0;
 
-$count = 0;
+while (my $line = <$file_fh>) {
+    chomp($line);
+    $line =~ s/["']//g;
+    next if $line =~ /^\s*$/;  # skip empty lines
 
+    my @Field_Values = split(",", $line);
 
-$Columns_Values = "";
+    for (my $i = 0; $i < $Field_Names_Count; $i++) {
+        $Field_Values[$i] //= "0";
 
+        my $val = $Field_Values[$i];
 
-open FILE, "$filename" or die $!;
+        # Default to varchar if letters are present
+        if ($val =~ /[a-zA-Z]/) {
+            $type[$i] = "varchar";
+            $length[$i] = length($val) if !defined($length[$i]) || $length[$i] < length($val);
+        }
+        # Decimal
+        elsif ($val =~ /^[+-]?\d+\.\d+$/) {
+            $type[$i] = "decimal";
+            my ($int_part, $dec_part) = split(/\./, $val);
+            $decimal_length1[$i] = length($int_part) if !defined($decimal_length1[$i]) || $decimal_length1[$i] < length($int_part);
+            $decimal_length2[$i] = length($dec_part) if !defined($decimal_length2[$i]) || $decimal_length2[$i] < length($dec_part);
+        }
+        # Integer
+        elsif ($val =~ /^-?\d+$/) {
+            $type[$i] = "int" if !defined($type[$i]) || $type[$i] ne "decimal";
+            $length[$i] = length($val) if !defined($length[$i]) || $length[$i] < length($val);
+        }
+        # Default fallback
+        else {
+            $type[$i] = "varchar";
+            $length[$i] = length($val) if !defined($length[$i]) || $length[$i] < length($val);
+        }
+    }
 
+    # Write to insert file
+    my $columns_str = join(", ", @Field_Names);
+    my @escaped_values = map { s/'/\\'/g; "'$_'" } @Field_Values;
+    my $values_str = join(", ", @escaped_values);
 
-my $columns = <FILE>;
-
-
-chop $columns;
-
-chop $columns;
-
-$columns =~ s/'/\\'/g;
-
-
-$columns =~ s/\"//;
-
-chop $columns;
-
-
-$columns =~ s/ /_/g;
-
-
-
-@Field_Names = split(",",$columns);
-
-
-$Field_Names_Count = $#Field_Names;
-
-$Field_Names_Count_Plus_One = $Field_Names_Count + 1;
-
-
-$field_count = 0;
-
-
-if ($count == 0)
-
-{
-
-$column_count = 0;
-
-   while ($column_count <= $Field_Names_Count)
-   
-   {
-      if ($column_count < $Field_Names_Count)
-   
-      {
-         $Columns_Values = $Columns_Values . $Field_Names[$column_count] . ", ";
-      }
-      
-      
-      if ($column_count == $Field_Names_Count)
-   
-      {
-         $Columns_Values = $Columns_Values . $Field_Names[$column_count];
-      }
-
-      $column_count++;
-   }
-   
-
+    print $values_fh "INSERT INTO $TABLE_NAME ($columns_str) VALUES ($values_str);\n";
+    $row_count++;
 }
 
-$count = 0;
+# Write schema
+print $table_fh "CREATE TABLE $TABLE_NAME (\n";
 
+for my $i (0 .. $#Field_Names) {
+    my $name = $Field_Names[$i];
+    print $table_fh "  `$name` ";
 
-while (<FILE>)
+    if ($type[$i] eq "decimal") {
+        my $p = ($decimal_length1[$i] // 5) + ($decimal_length2[$i] // 2);
+        my $s = $decimal_length2[$i] // 2;
+        print $table_fh "DECIMAL($p,$s)";
+    } elsif ($type[$i] eq "int") {
+        my $l = $length[$i] // 10;
+        print $table_fh "INT($l)";
+    } else {
+        my $l = $length[$i] // 50;
+        print $table_fh "VARCHAR($l)";
+    }
 
-{
-
-
-chomp $_;
-
-
-$_ =~ s/\"//;
-
-
-chop $_;
-
-
-@Field_Values = split(",",$_);
-
-while ($field_count <= $Field_Names_Count )
-
-{
-
-
-   $Field_Values[$field_count] =~ s/'/\\'/g;
-
-
-         if (length($Field_Values[$field_count]) < 1)
-         
-         {
-            $Field_Values[$field_count] = "0";
-         }
-
-
-         if ( $Field_Values[$field_count] =~ m/[a-zA-Z]/)
-         
-         {
-               $type[$field_count] = "varchar";
-               
-
-               if ($length[$field_count] < 'length($Field_Values[$field_count])')
-            
-               {
-                  $length[$field_count] = length($Field_Values[$field_count]);
-               }
-         }
-   
-   if ($type[$field_count] ne "varchar")
-   
-   {
-         if ( $Field_Values[$field_count] =~ m/[^a-zA-Z]/)
-   
-         {
-            if ($type[$field_count] ne "decimal")
-            
-            {
-               $type[$field_count] = "int";
-               
-               if ($length[$field_count] lt 'length($Field_Values[$field_count])')
-               {
-                  $length[$field_count] = length($Field_Values[$field_count]);
-               }
-            }
-         }
-   
-         if ( $Field_Values[$field_count] =~ m/[0-9.]/)
-   
-         {
-               @count_periods = split("\\.",$Field_Values[$field_count]);
-               $number_of_periods = $#count_periods;
-            
-            
-            if ($number_of_periods > 1)
-            
-            {
-   
-            $type[$field_count] = "varchar";
-            
-         
-               if ($length[$field_count] < 'length($Field_Values[$field_count])')
-               {
-                  $length[$field_count] = length($Field_Values[$field_count]);
-               }
-   
-   
-                  $decimal_length1[$field_count] = "";
-                  $decimal_length2[$field_count] = "";
-               }
-   
-            if ($number_of_periods == 1)
-            
-            {
-               $type[$field_count] = "decimal";
-               @split_decimal_number = split("\\.",$Field_Values[$field_count]);
-               
-               if ($decimal_length1[$field_count] lt length($split_decimal_number[0]))
-               
-               {
-                  $decimal_length1[$field_count] = length($split_decimal_number[0]);
-               }
-               
-               if ($decimal_length2[$field_count] lt length($split_decimal_number[1]))
-               
-               {
-                  $decimal_length2[$field_count] = length($split_decimal_number[1]);
-               }
-                           
-            }
-   
-         }
-                  
-         if ( $Field_Values[$field_count] =~ m/[^0-9.]/)
-         
-         {
-               $type[$field_count] = "varchar";
-   
-               if ($length[$field_count] lt 'length($Field_Values[$field_count])')
-            
-               {
-                  $length[$field_count] = length($Field_Values[$field_count]);
-               }
-   
-         }
-   
-   }
-   
-   else
-   
-   {         
-   
-               if ($length[$field_count] < length($Field_Values[$field_count]))
-            
-               {
-                  $length[$field_count] = length($Field_Values[$field_count]);
-               }
-   
-   
-   }
-   
-   
-   
-         if (length($Field_Values[$field_count]) < 1)
-         
-         {
-            $Field_Values[$field_count] = "";
-         }
-
-   
-      if ($field_count == 0)
-      
-      {
-         print VALUES "insert into $TABLE_NAME ($Columns_Values) \nvalues ('$Field_Values[$field_count]'";
-      }
-      
-         if ($field_count > 0 && $field_count < $Field_Names_Count_Plus_One)
-         
-         {
-            print VALUES ", '$Field_Values[$field_count]'";
-         }
-         
-      $field_count++;
-      }
-   
-         if ($field_count == $Field_Names_Count_Plus_One)
-         
-         {
-            $field_count = 0;
-            $count++;
-            print VALUES ");\n";
-         }
-   
-
-
+    print $table_fh "," if $i < $#Field_Names;
+    print $table_fh "\n";
 }
 
-print TABLE "\n\nCREATE TABLE `$TABLE_NAME` (\n";
+print $table_fh ") ENGINE=$DATABASE_ENGINE DEFAULT CHARSET=$DEFAULT_CHARSET;\n";
 
-$count_columns = 0;
+# Close all files
+close($file_fh);
+close($table_fh);
+close($values_fh);
 
-
-while ($count_columns < $Field_Names_Count_Plus_One)
-
-{
-   if (length($Field_Names[$count_columns]) > 0)
-   
-   {
-      if ($type[$count_columns] =~ "decimal")
-      
-      {
-         $decimal_field_length = $decimal_length1[$count_columns] + $decimal_length2[$count_columns];
-         print TABLE " `$Field_Names[$count_columns]` $type[$count_columns] ($decimal_field_length,$decimal_length2[$count_columns])";
-      }
-      
-      else
-      
-      {
-         print TABLE " `$Field_Names[$count_columns]` $type[$count_columns] ($length[$count_columns])";
-      }
-   
-      if ($count_columns < $Field_Names_Count)
-      
-      {
-         print TABLE ",\n";
-      }
-      
-      if ($count_columns == $Field_Names_Count_Plus_One)
-      
-      {
-         print TABLE "\n\n";
-      }
-      
-   }
-
-$count_columns++;
-
-}
-
-print "Processed $column_count columns and $count lines.\n";
-
-print TABLE "\n) ENGINE=$DATABASE_ENGINE DEFAULT CHARSET=$DEFAULT_CHARSET\n";
-
-print TABLE "\n\n";
-
-close(FILE);
-
-exit;
-
-
-print "Process completed.\n";
+print "✔ Processed $Field_Names_Count columns and $row_count rows.\n";
+print "✔ Created 'mysqlCreateSchema.sql' and 'mysqlInsertValues.sql'.\n";
